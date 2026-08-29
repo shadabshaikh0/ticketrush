@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>TicketRush — concurrency, made visible</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --panel: #171a23;
+            --panel-2: #1e222e;
+            --border: #2a2f3d;
+            --text: #e6e8ee;
+            --muted: #9aa3b2;
+            --avail: #2a2f3d;
+            --booked: #22c55e;
+            --oversold: #ef4444;
+            --accent: #6366f1;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; background: var(--bg); color: var(--text);
+            font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        header { padding: 24px 28px 8px; }
+        h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+        .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+        .wrap { display: grid; grid-template-columns: 1fr 340px; gap: 20px; padding: 16px 28px 40px; }
+        @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+        .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+        .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 18px; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field label { font-size: 12px; color: var(--muted); }
+        input, select {
+            background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+            border-radius: 8px; padding: 8px 10px; font-size: 14px; min-width: 110px;
+        }
+        button {
+            background: var(--accent); color: white; border: none; border-radius: 8px;
+            padding: 10px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+        }
+        button.secondary { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; }
+        .seat {
+            aspect-ratio: 1 / 1; background: var(--avail); border-radius: 6px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; color: var(--muted); transition: background .15s, transform .1s;
+        }
+        .seat.booked { background: var(--booked); color: #06240f; font-weight: 700; }
+        .seat.oversold { background: var(--oversold); color: #2a0606; font-weight: 700; animation: flash .5s; }
+        @keyframes flash { 0% { transform: scale(1.25); } 100% { transform: scale(1); } }
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+        .stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+        .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+        .stat .v { font-size: 20px; font-weight: 700; margin-top: 2px; }
+        .verdict { grid-column: 1 / -1; text-align: center; font-weight: 700; padding: 10px; border-radius: 8px; }
+        .verdict.pass { background: rgba(34,197,94,.15); color: #4ade80; border: 1px solid rgba(34,197,94,.4); }
+        .verdict.fail { background: rgba(239,68,68,.15); color: #f87171; border: 1px solid rgba(239,68,68,.4); }
+        .verdict.idle { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+        .narration { font-size: 13px; color: var(--muted); line-height: 1.5; margin-top: 14px;
+            background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+        th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+        th:first-child, td:first-child { text-align: left; }
+        .ok { color: #4ade80; } .bad { color: #f87171; }
+        .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 12px; }
+        .legend span { display: inline-flex; align-items: center; gap: 6px; }
+        .dot { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>🎟️ TicketRush</h1>
+    <div class="sub">Concurrency control &amp; distributed systems, made visible. Every number below is a real server outcome against Postgres.</div>
+</header>
+
+<div class="wrap">
+    <div class="panel">
+        <div class="controls">
+            <div class="field">
+                <label for="concurrency">Concurrent requests</label>
+                <input id="concurrency" type="number" value="500" min="1" max="5000"/>
+            </div>
+            <div class="field">
+                <label for="strategy">Strategy</label>
+                <select id="strategy">
+                    <option value="NAIVE">naive (read-then-write) — the bug</option>
+                    <option value="PESSIMISTIC">pessimistic — SELECT … FOR UPDATE</option>
+                    <option value="OPTIMISTIC">optimistic — version + retry</option>
+                    <option value="ATOMIC">atomic — conditional UPDATE</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="gap">naive gap (ms)</label>
+                <input id="gap" type="number" value="5" min="0" max="200"/>
+            </div>
+            <button id="run">Run stampede</button>
+            <button id="reset" class="secondary">Reset</button>
+        </div>
+
+        <div class="grid" id="grid"></div>
+
+        <div class="legend">
+            <span><i class="dot" style="background:var(--avail)"></i> available</span>
+            <span><i class="dot" style="background:var(--booked)"></i> booked</span>
+            <span><i class="dot" style="background:var(--oversold)"></i> double-booked (oversold)</span>
+        </div>
+
+        <div class="narration" id="narration"></div>
+    </div>
+
+    <div>
+        <div class="panel">
+            <div class="stats">
+                <div class="stat"><div class="k">Booked (distinct seats)</div><div class="v" id="s-booked">–</div></div>
+                <div class="stat"><div class="k">Oversold seats</div><div class="v" id="s-oversold">–</div></div>
+                <div class="stat"><div class="k">Rejected</div><div class="v" id="s-rejected">–</div></div>
+                <div class="stat"><div class="k">Retries</div><div class="v" id="s-retries">–</div></div>
+                <div class="stat"><div class="k">p99 latency</div><div class="v" id="s-p99">–</div></div>
+                <div class="stat"><div class="k">Throughput</div><div class="v" id="s-tput">–</div></div>
+                <div class="verdict idle" id="verdict">run a stampede to test the invariant</div>
+            </div>
+        </div>
+
+        <div class="panel" style="margin-top:20px;">
+            <div style="font-size:13px;color:var(--muted);margin-bottom:4px;">Comparison (each run appends a row)</div>
+            <table id="cmp">
+                <thead>
+                <tr><th>Strategy</th><th>Booked</th><th>Oversold</th><th>Rejected</th><th>Invariant</th><th>p99</th><th>req/s</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: ticketrush
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ticketrush}
+    username: ${DB_USER:ticketrush}
+    password: ${DB_PASSWORD:ticketrush}
+    hikari:
+      # A generous pool so many requests hit the DB *concurrently* — this is what
+      # makes the naive race condition reproducible in the demo.
+      maximum-pool-size: 60
+      pool-name: ticketrush-pool
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+server:
+  port: 8080
+
+demo:
+  show-id: 1
+  seat-count: 100
