@@ -90,9 +90,9 @@ es.addEventListener("msg", (e) => {
     }
     liveBooked++;
     document.getElementById("s-booked").textContent = liveBooked;
-  } else if (ev.type === "summary") {
-    applySummary(ev.result);
   }
+  // Note: the final summary is applied from the /demo/stampede HTTP response (see run
+  // handler), not from SSE, so it is correct even when SSE is on a different cluster node.
 });
 
 function applySummary(r) {
@@ -142,13 +142,16 @@ runBtn.addEventListener("click", async () => {
     nodes: parseInt(document.getElementById("nodes").value, 10),
   };
   try {
-    await fetch("/demo/stampede", {
+    const res = await fetch("/demo/stampede", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    // final metrics also arrive via the SSE "summary" event;
-    // repaint the grid from authoritative DB state (correct even in cluster mode).
+    // Drive the stats/verdict from the authoritative HTTP response — this works even in
+    // cluster mode, where the SSE stream may be connected to a different node than the one
+    // that ran the stampede. Then repaint the grid from the shared DB state.
+    const result = await res.json();
+    applySummary(result);
     await repaintFromState();
   } catch (err) {
     document.getElementById("verdict").textContent = "request failed: " + err;

@@ -149,54 +149,102 @@ lands on a different node, which is what exposes the `synchronized` strategy.
 
 ## Test cases
 
-Everything below is runnable against `http://localhost:8080`. The **invariant** that must hold
-for every correct strategy: `bookingRows == distinctSeatsBooked` **and** `≤ totalSeats`.
+Every screenshot below is a **real run** against the live app (500 concurrent requests for 100
+seats, naive gap 5ms unless noted). The **invariant**: `bookings == distinct seats booked` and
+`≤ total seats`. Green = booked once, red = double-booked, yellow = held. Each `curl` reproduces
+the same numbers from the CLI.
 
-### 1 · The race condition and its fixes (single node)
+### 1. `naive` — read-then-write · ❌ oversells
+Many requests read the seat as `AVAILABLE` before any write lands, so they all "succeed" — the
+same seat is sold many times (lost update).
+
+![naive — invariant violated, seats double-booked](docs/screenshots/strat-naive.gif)
+
 ```bash
-for s in NAIVE PESSIMISTIC OPTIMISTIC ATOMIC SYNCHRONIZED REDIS_LOCK; do
-  curl -s -X POST http://localhost:8080/demo/stampede -H 'Content-Type: application/json' \
-    -d "{\"concurrency\":500,\"strategy\":\"$s\",\"gapMs\":5,\"seatCount\":100,\"nodes\":1}" \
-  | python3 -c "import sys,json;r=json.load(sys.stdin);print(f\"{r['strategy']:<13} oversold={r['oversoldSeats']:<3} invariant={r['invariantHeld']}\")"
-done
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"NAIVE","concurrency":500,"gapMs":5,"nodes":1}' | python3 -m json.tool
 ```
-Expected:
+> **Expected:** `oversoldSeats > 0`, `invariantHeld: false`.
 
-| Strategy | oversold | invariant |
-|---|:---:|:---:|
-| NAIVE | > 0 | **false** ❌ |
-| PESSIMISTIC | 0 | true ✅ |
-| OPTIMISTIC | 0 | true ✅ |
-| ATOMIC | 0 | true ✅ |
-| SYNCHRONIZED | 0 | true ✅ |
-| REDIS_LOCK | 0 | true ✅ |
+### 2. `pessimistic` — `SELECT … FOR UPDATE` · ✅ holds
+A row lock serializes contenders; only the first sees the seat available.
 
-### 2 · In-process lock fails across nodes (needs the cluster)
+![pessimistic — invariant held](docs/screenshots/strat-pessimistic.gif)
+
 ```bash
-# start: docker compose -f docker-compose.cluster.yml up --build --scale app=3
-for s in SYNCHRONIZED REDIS_LOCK; do
-  curl -s -X POST http://localhost:8080/demo/stampede -H 'Content-Type: application/json' \
-    -d "{\"concurrency\":300,\"strategy\":\"$s\",\"gapMs\":50,\"seatCount\":100,\"nodes\":3}" \
-  | python3 -c "import sys,json;r=json.load(sys.stdin);print(f\"{r['strategy']:<13} oversold={r['oversoldSeats']:<3} invariant={r['invariantHeld']} nodesSeen={r['nodesSeen']}\")"
-done
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"PESSIMISTIC","concurrency":500,"nodes":1}' | python3 -m json.tool
 ```
-Expected: `SYNCHRONIZED` → **oversold > 0, invariant false** (each node has its own JVM lock);
-`REDIS_LOCK` → **oversold 0, invariant true**. Both show `nodesSeen=3`.
+> **Expected:** `oversoldSeats: 0`, `invariantHeld: true`, `rejected: 400`.
 
-### 3 · Idempotency — identical confirms create one booking
+### 3. `optimistic` — version + retry · ✅ holds
+No locks: each writer bumps a `version` and only commits if it's unchanged; losers retry.
+
+![optimistic — invariant held, retries shown](docs/screenshots/strat-optimistic.gif)
+
 ```bash
-curl -s -X POST http://localhost:8080/demo/idempotency-test | python3 -m json.tool
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"OPTIMISTIC","concurrency":500,"nodes":1}' | python3 -m json.tool
 ```
-Expected: `"bookings": 1`, `"correct": true`, outcomes like `["BOOKED","REJECTED",...]`.
+> **Expected:** `oversoldSeats: 0`, `invariantHeld: true`, `retries > 0`.
 
-### 4 · Hold lease auto-releases on TTL
+### 4. `atomic` — conditional `UPDATE` · ✅ holds
+A single `UPDATE … WHERE status='AVAILABLE'` — the database guarantees one winner. Fastest fix.
+
+![atomic — invariant held](docs/screenshots/strat-atomic.gif)
+
 ```bash
-curl -s -X POST http://localhost:8080/demo/hold -H 'Content-Type: application/json' -d '{"count":5,"ttlSeconds":3}'
-curl -s http://localhost:8080/demo/seats | python3 -c "import sys,json;d=json.load(sys.stdin);print('HELD now:', sum(1 for s in d if s['status']=='HELD'))"
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"ATOMIC","concurrency":500,"nodes":1}' | python3 -m json.tool
+```
+> **Expected:** `oversoldSeats: 0`, `invariantHeld: true`, `retries: 0`.
+
+### 5. `synchronized` — JVM lock · ✅ on 1 node / ❌ on 3 nodes
+*(the cluster cases need `docker compose -f docker-compose.cluster.yml up --build --scale app=3`)*
+
+**1 node** — the JVM lock serializes access, so it's correct:
+
+![synchronized on 1 node — invariant held](docs/screenshots/strat-synchronized-1node.gif)
+
+**3 nodes** — each JVM has its **own** lock, so seats double-book across the cluster:
+
+![synchronized on 3 nodes — invariant violated, handled by 3 nodes](docs/screenshots/strat-synchronized-3nodes.gif)
+
+```bash
+# 1 node → holds
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"SYNCHRONIZED","concurrency":500,"nodes":1}' | python3 -m json.tool
+# 3 nodes → oversells
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"SYNCHRONIZED","concurrency":300,"gapMs":50,"nodes":3}' | python3 -m json.tool
+```
+> **Expected:** 1 node → `invariantHeld: true`; 3 nodes → `oversoldSeats > 0`, `invariantHeld: false`, `nodesSeen: 3`.
+
+### 6. `redis lock` — distributed (`SET NX PX` + fencing) · ✅ holds across the cluster
+All nodes coordinate through Redis, so exactly one holder books each seat — correct even on 3 nodes.
+
+![redis lock on 3 nodes — invariant held, handled by 3 nodes](docs/screenshots/strat-redislock-3nodes.gif)
+
+```bash
+curl -s -X POST localhost:8080/demo/stampede -H 'Content-Type: application/json' \
+  -d '{"strategy":"REDIS_LOCK","concurrency":300,"gapMs":50,"nodes":3}' | python3 -m json.tool
+```
+> **Expected:** `oversoldSeats: 0`, `invariantHeld: true`, `nodesSeen: 3`.
+
+### 7. Idempotency — identical confirms create one booking
+```bash
+curl -s -X POST localhost:8080/demo/idempotency-test | python3 -m json.tool
+```
+> **Expected:** `"bookings": 1`, `"correct": true`, outcomes like `["BOOKED","REJECTED",...]`.
+
+### 8. Hold lease auto-releases on TTL
+```bash
+curl -s -X POST localhost:8080/demo/hold -H 'Content-Type: application/json' -d '{"count":5,"ttlSeconds":3}'
+curl -s localhost:8080/demo/seats | python3 -c "import sys,json;d=json.load(sys.stdin);print('HELD now:', sum(1 for s in d if s['status']=='HELD'))"
 sleep 5
-curl -s http://localhost:8080/demo/seats | python3 -c "import sys,json;d=json.load(sys.stdin);print('HELD after expiry:', sum(1 for s in d if s['status']=='HELD'))"
+curl -s localhost:8080/demo/seats | python3 -c "import sys,json;d=json.load(sys.stdin);print('HELD after expiry:', sum(1 for s in d if s['status']=='HELD'))"
 ```
-Expected: `HELD now: 5` → `HELD after expiry: 0` (the sweeper released them).
+> **Expected:** `HELD now: 5` → `HELD after expiry: 0` (the sweeper released them).
 
 ---
 
