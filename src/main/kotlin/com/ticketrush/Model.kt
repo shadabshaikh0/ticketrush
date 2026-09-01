@@ -1,7 +1,14 @@
 package com.ticketrush
 
 /** The concurrency-control strategy used when booking a seat. */
-enum class Strategy { NAIVE, PESSIMISTIC, OPTIMISTIC, ATOMIC }
+enum class Strategy {
+    NAIVE,          // read-then-write, no coordination (the bug)
+    PESSIMISTIC,    // SELECT ... FOR UPDATE
+    OPTIMISTIC,     // version + retry
+    ATOMIC,         // conditional UPDATE
+    SYNCHRONIZED,   // JVM lock around a naive body — correct on 1 node, oversells across nodes
+    REDIS_LOCK,     // distributed lock (SET NX PX + fencing) — correct across nodes
+}
 
 /** Outcome of a single booking attempt. */
 enum class Outcome { BOOKED, REJECTED, ERROR }
@@ -21,12 +28,24 @@ data class HoldRequest(val count: Int = 20, val ttlSeconds: Long = 8)
 data class StampedeRequest(
     val concurrency: Int = 500,
     val strategy: Strategy = Strategy.NAIVE,
-    // Artificial read->write gap (ms) used ONLY by NAIVE, to make the lost-update
-    // race reliably reproducible in a live demo. The race exists regardless; the
-    // gap just widens the window so it shows every time.
+    // Artificial read->write gap (ms) used by NAIVE / SYNCHRONIZED / REDIS_LOCK bodies,
+    // to make the lost-update race reliably reproducible in a live demo.
     val gapMs: Long = 5,
     val seatCount: Int = 100,
+    // >1 fans the load out across app nodes via the cluster load balancer (M3).
+    val nodes: Int = 1,
 )
+
+/** Request body for POST /internal/book — one booking on whichever node handles it. */
+data class InternalBookRequest(
+    val seatId: Long,
+    val strategy: Strategy,
+    val gapMs: Long = 5,
+    val userId: String = "u",
+)
+
+/** Seat + how many bookings it has — used to repaint the grid authoritatively after a run. */
+data class SeatState(val id: Long, val label: String, val status: String, val bookings: Int)
 
 /** Aggregated result of a stampede run — this is what the comparison table shows. */
 data class StampedeResult(
@@ -45,6 +64,8 @@ data class StampedeResult(
     val p50Ms: Long,
     val p95Ms: Long,
     val p99Ms: Long,
+    val nodes: Int = 1,
+    val nodesSeen: Int = 1,
 )
 
 /** Build a human seat label like A1..A10, B1..B10 (10 seats per row). */

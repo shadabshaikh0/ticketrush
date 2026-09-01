@@ -15,8 +15,8 @@ services:
 
   redis:
     image: redis:7
-    ports:
-      - "6379:6379"
+    # No host port mapping — the app reaches it in-network as redis:6379, and this avoids
+    # clashing with any Redis you already run on the host.
 
   app:
     build: .
@@ -24,6 +24,7 @@ services:
       DB_URL: jdbc:postgresql://db:5432/ticketrush
       DB_USER: ticketrush
       DB_PASSWORD: ticketrush
+      REDIS_HOST: redis
     ports:
       - "8080:8080"
     depends_on:

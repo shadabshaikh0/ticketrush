@@ -91,11 +91,20 @@
                     <option value="PESSIMISTIC">pessimistic — SELECT … FOR UPDATE</option>
                     <option value="OPTIMISTIC">optimistic — version + retry</option>
                     <option value="ATOMIC">atomic — conditional UPDATE</option>
+                    <option value="SYNCHRONIZED">synchronized — JVM lock (fails across nodes)</option>
+                    <option value="REDIS_LOCK">redis lock — distributed (correct across nodes)</option>
                 </select>
             </div>
             <div class="field">
                 <label for="gap">naive gap (ms)</label>
                 <input id="gap" type="number" value="5" min="0" max="200"/>
+            </div>
+            <div class="field">
+                <label for="nodes">App nodes</label>
+                <select id="nodes">
+                    <option value="1">1 (single)</option>
+                    <option value="3">3 (cluster)</option>
+                </select>
             </div>
             <button id="run">Run stampede</button>
             <button id="reset" class="secondary">Reset</button>

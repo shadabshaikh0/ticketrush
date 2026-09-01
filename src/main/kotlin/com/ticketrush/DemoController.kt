@@ -49,6 +49,11 @@ class DemoController(
     @GetMapping("/seats")
     fun seats(): List<SeatDto> = seats.seats(showId)
 
+    // Authoritative seat state incl. booking counts — the grid repaints from this after a run
+    // (correct even in cluster mode, where live SSE only covers the node that ran the stampede).
+    @GetMapping("/state")
+    fun state(): List<SeatState> = seats.seatStates(showId)
+
     @GetMapping("/stream", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
     fun stream(): SseEmitter = events.subscribe()
 }

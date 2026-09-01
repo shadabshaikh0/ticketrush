@@ -13,13 +13,22 @@ const NARRATION = {
   PESSIMISTIC: "SELECT … FOR UPDATE locks the seat row; contenders queue and only the first sees it AVAILABLE. Correct, but it serializes access and holds locks for the transaction.",
   OPTIMISTIC: "No locks. Each writer bumps a version and commits only if the version is unchanged (UPDATE … WHERE version = ?). Losers detect the conflict via rowcount 0 and retry or give up.",
   ATOMIC: "A single conditional UPDATE … WHERE status='AVAILABLE'. The database guarantees exactly one row-update wins the predicate. Simplest correct fix — no explicit lock, no retry loop.",
+  SYNCHRONIZED: "A JVM lock (synchronized) around a naive read-then-write. On ONE node this serializes and is correct — but each node has its OWN lock, so set App nodes = 3 and the oversell returns: in-process locks don't compose across a cluster. (Uses a ~50ms gap so the cross-node race shows clearly through the network.)",
+  REDIS_LOCK: "A distributed lock in Redis (SET NX PX + fencing token) around the same naive body. All nodes coordinate through Redis, so exactly one holder books each seat — correct even with App nodes = 3. This is how you lock across a cluster.",
 };
 
 function setNarration() {
   document.getElementById("narration").textContent =
     NARRATION[document.getElementById("strategy").value];
 }
-document.getElementById("strategy").addEventListener("change", setNarration);
+document.getElementById("strategy").addEventListener("change", () => {
+  setNarration();
+  // The cross-node race needs a wider read->write window to show through the network.
+  const s = document.getElementById("strategy").value;
+  const gap = document.getElementById("gap");
+  if (s === "SYNCHRONIZED") gap.value = 50;
+  else if (s === "NAIVE") gap.value = 5;
+});
 setNarration();
 
 function renderGrid(seats) {
@@ -95,12 +104,13 @@ function applySummary(r) {
   document.getElementById("s-tput").textContent = Math.round(r.throughputPerSec) + "/s";
 
   const v = document.getElementById("verdict");
+  const nodeNote = r.nodes > 1 ? ` · handled by ${r.nodesSeen} node${r.nodesSeen > 1 ? "s" : ""}` : "";
   if (r.invariantHeld) {
     v.className = "verdict pass";
-    v.textContent = `✅ INVARIANT HELD — ${r.distinctSeatsBooked}/${r.totalSeats} booked, 0 double-booked`;
+    v.textContent = `✅ INVARIANT HELD — ${r.distinctSeatsBooked}/${r.totalSeats} booked, 0 double-booked${nodeNote}`;
   } else {
     v.className = "verdict fail";
-    v.textContent = `❌ INVARIANT VIOLATED — ${r.bookingRows} bookings for ${r.totalSeats} seats, ${r.oversoldSeats} oversold`;
+    v.textContent = `❌ INVARIANT VIOLATED — ${r.bookingRows} bookings for ${r.totalSeats} seats, ${r.oversoldSeats} oversold${nodeNote}`;
   }
 
   const tbody = document.querySelector("#cmp tbody");
@@ -129,6 +139,7 @@ runBtn.addEventListener("click", async () => {
     strategy: document.getElementById("strategy").value,
     gapMs: parseInt(document.getElementById("gap").value, 10),
     seatCount: 100,
+    nodes: parseInt(document.getElementById("nodes").value, 10),
   };
   try {
     await fetch("/demo/stampede", {
@@ -136,7 +147,9 @@ runBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    // final metrics also arrive via the SSE "summary" event
+    // final metrics also arrive via the SSE "summary" event;
+    // repaint the grid from authoritative DB state (correct even in cluster mode).
+    await repaintFromState();
   } catch (err) {
     document.getElementById("verdict").textContent = "request failed: " + err;
   } finally {
@@ -144,6 +157,23 @@ runBtn.addEventListener("click", async () => {
     resetBtn.disabled = false;
   }
 });
+
+async function repaintFromState() {
+  try {
+    const res = await fetch("/demo/state");
+    const seats = await res.json();
+    for (const s of seats) {
+      const cell = cellById.get(String(s.id));
+      if (!cell) continue;
+      cell.classList.remove("booked", "held", "oversold");
+      if (s.bookings > 1) cell.classList.add("oversold");
+      else if (s.bookings === 1 || s.status === "BOOKED") cell.classList.add("booked");
+      else if (s.status === "HELD") cell.classList.add("held");
+    }
+  } catch (e) {
+    /* non-fatal: the live SSE grid still reflects the run */
+  }
+}
 
 resetBtn.addEventListener("click", async () => {
   await fetch("/demo/reset", { method: "POST" });

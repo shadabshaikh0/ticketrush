@@ -189,6 +189,20 @@ class SeatRepository(
     fun bookingCountForSeat(seatId: Long): Int =
         jdbc.queryForObject("SELECT COUNT(*) FROM booking WHERE seat_id = ?", Int::class.java, seatId) ?: 0
 
+    /** Every seat with its booking count — the authoritative state the grid repaints from. */
+    fun seatStates(showId: Long): List<SeatState> =
+        jdbc.query(
+            """
+            SELECT s.id, s.label, s.status, COUNT(b.id) AS bookings
+            FROM seat s LEFT JOIN booking b ON b.seat_id = s.id
+            WHERE s.show_id = ?
+            GROUP BY s.id, s.label, s.status
+            ORDER BY s.id
+            """.trimIndent(),
+            { rs, _ -> SeatState(rs.getLong("id"), rs.getString("label"), rs.getString("status"), rs.getInt("bookings")) },
+            showId,
+        )
+
     // ---- metrics ---------------------------------------------------------
 
     fun totalSeats(showId: Long): Int =

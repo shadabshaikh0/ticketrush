@@ -10,6 +10,10 @@ spring:
       # makes the naive race condition reproducible in the demo.
       maximum-pool-size: 60
       pool-name: ticketrush-pool
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   sql:
     init:
       mode: always
@@ -27,3 +31,8 @@ server:
 demo:
   show-id: 1
   seat-count: 100
+  # Identifies this app instance (Docker sets HOSTNAME to the container id → unique per node).
+  node-name: ${NODE_NAME:${HOSTNAME:local}}
+  # Set to the load balancer URL in the cluster compose; when a stampede requests
+  # nodes>1 the load is fanned out here so it spreads across app instances.
+  cluster-lb-url: ${CLUSTER_LB_URL:}
