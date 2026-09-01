@@ -57,15 +57,25 @@ es.addEventListener("msg", (e) => {
   const ev = JSON.parse(e.data);
   if (ev.type === "reset") {
     renderGrid(ev.seats);
+  } else if (ev.type === "held") {
+    const cell = cellById.get(String(ev.seatId));
+    if (cell) {
+      cell.classList.remove("booked", "oversold");
+      cell.classList.add("held");
+    }
+  } else if (ev.type === "released") {
+    const cell = cellById.get(String(ev.seatId));
+    if (cell) cell.classList.remove("booked", "held", "oversold");
   } else if (ev.type === "booked") {
     const cell = cellById.get(String(ev.seatId));
     if (cell) {
       if (ev.oversell) {
-        cell.classList.remove("booked");
+        cell.classList.remove("booked", "held");
         cell.classList.add("oversold");
         liveOversold++;
         document.getElementById("s-oversold").textContent = liveOversold;
       } else if (!cell.classList.contains("oversold")) {
+        cell.classList.remove("held");
         cell.classList.add("booked");
       }
     }
@@ -140,6 +150,54 @@ resetBtn.addEventListener("click", async () => {
   resetStatsUI();
   document.getElementById("verdict").className = "verdict idle";
   document.getElementById("verdict").textContent = "run a stampede to test the invariant";
+  document.getElementById("m2result").style.display = "none";
+});
+
+// ---- M2: holds (TTL) + idempotency ----
+const holdBtn = document.getElementById("holdBtn");
+const idemBtn = document.getElementById("idemBtn");
+const m2result = document.getElementById("m2result");
+
+holdBtn.addEventListener("click", async () => {
+  holdBtn.disabled = true;
+  const body = {
+    count: parseInt(document.getElementById("holdCount").value, 10),
+    ttlSeconds: parseInt(document.getElementById("ttl").value, 10),
+  };
+  m2result.style.display = "block";
+  m2result.textContent = `Holding ${body.count} seats for ${body.ttlSeconds}s — watch them turn yellow, then auto-release to grey when each lease expires (the sweeper runs every second).`;
+  try {
+    const res = await fetch("/demo/hold", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const r = await res.json();
+    m2result.textContent = `Held ${r.held} seats for ${r.ttlSeconds}s (lease / TTL). They'll flip back to available automatically on expiry — no client action needed.`;
+  } catch (e) {
+    m2result.textContent = "hold failed: " + e;
+  } finally {
+    holdBtn.disabled = false;
+  }
+});
+
+idemBtn.addEventListener("click", async () => {
+  idemBtn.disabled = true;
+  m2result.style.display = "block";
+  m2result.textContent = "Firing 5 identical confirms (same idempotency key) concurrently…";
+  try {
+    const res = await fetch("/demo/idempotency-test", { method: "POST" });
+    const r = await res.json();
+    const mark = r.correct ? "✅" : "❌";
+    m2result.textContent =
+      `${mark} Seat ${r.label}: ${r.attempts} identical confirms (same key) → ${r.bookings} booking(s). ` +
+      `Outcomes: [${r.outcomes.join(", ")}]. ` +
+      (r.correct ? "Idempotency held — exactly one booking." : "Idempotency FAILED.");
+  } catch (e) {
+    m2result.textContent = "idempotency test failed: " + e;
+  } finally {
+    idemBtn.disabled = false;
+  }
 });
 
 loadSeats();

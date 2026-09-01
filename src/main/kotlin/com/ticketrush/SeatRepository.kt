@@ -1,5 +1,6 @@
 package com.ticketrush
 
+import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.support.TransactionTemplate
@@ -36,7 +37,10 @@ class SeatRepository(
     /** Clear all bookings and mark every seat AVAILABLE again — used between runs. */
     fun reset(showId: Long) {
         jdbc.update("DELETE FROM booking WHERE seat_id IN (SELECT id FROM seat WHERE show_id = ?)", showId)
-        jdbc.update("UPDATE seat SET status = 'AVAILABLE', version = 0, booked_by = NULL WHERE show_id = ?", showId)
+        jdbc.update(
+            "UPDATE seat SET status = 'AVAILABLE', version = 0, booked_by = NULL, hold_expires_at = NULL WHERE show_id = ?",
+            showId,
+        )
     }
 
     fun seats(showId: Long): List<SeatDto> =
@@ -119,6 +123,71 @@ class SeatRepository(
     private fun insertBooking(seatId: Long, userId: String) {
         jdbc.update("INSERT INTO booking(seat_id, user_id) VALUES (?, ?)", seatId, userId)
     }
+
+    // ---- M2: holds (leases with TTL) + idempotency -----------------------
+
+    fun availableSeatIds(showId: Long, limit: Int): List<Long> =
+        jdbc.queryForList(
+            "SELECT id FROM seat WHERE show_id = ? AND status = 'AVAILABLE' ORDER BY id LIMIT ?",
+            Long::class.java, showId, limit,
+        )
+
+    /**
+     * Atomically place a hold (a lease) on an AVAILABLE seat for [ttlSeconds]. After that
+     * instant the seat is eligible for auto-release by the sweeper unless it's confirmed.
+     */
+    fun holdAtomic(seatId: Long, userId: String, ttlSeconds: Long): Boolean {
+        val updated = jdbc.update(
+            "UPDATE seat SET status = 'HELD', booked_by = ?, hold_expires_at = now() + (? * interval '1 second') " +
+                "WHERE id = ? AND status = 'AVAILABLE'",
+            userId, ttlSeconds, seatId,
+        )
+        return updated == 1
+    }
+
+    /**
+     * Confirm a held seat (the "payment" step), keyed by an idempotency key so replays and
+     * concurrent duplicates create at most ONE booking.
+     * Returns: BOOKED (first success) | DEDUP (key already used) | REJECTED (hold expired/not held).
+     */
+    fun confirm(seatId: Long, userId: String, idempotencyKey: String): String = tx.execute {
+        val prior = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM booking WHERE idempotency_key = ?", Int::class.java, idempotencyKey,
+        ) ?: 0
+        if (prior > 0) return@execute "DEDUP"
+
+        val updated = jdbc.update(
+            "UPDATE seat SET status = 'BOOKED' WHERE id = ? AND status = 'HELD' AND hold_expires_at > now()",
+            seatId,
+        )
+        if (updated != 1) return@execute "REJECTED" // hold expired or seat not held → late payment rejected
+
+        try {
+            jdbc.update(
+                "INSERT INTO booking(seat_id, user_id, idempotency_key) VALUES (?, ?, ?)",
+                seatId, userId, idempotencyKey,
+            )
+        } catch (e: DuplicateKeyException) {
+            return@execute "DEDUP" // a concurrent request with the same key already booked it
+        }
+        "BOOKED"
+    }!!
+
+    /**
+     * Release every hold whose lease has expired, in a single atomic statement, and return
+     * the seats that were freed (so the UI can flip them back to AVAILABLE live).
+     */
+    fun sweepExpiredHolds(showId: Long): List<SeatDto> =
+        jdbc.query(
+            "UPDATE seat SET status = 'AVAILABLE', booked_by = NULL, hold_expires_at = NULL " +
+                "WHERE show_id = ? AND status = 'HELD' AND hold_expires_at < now() " +
+                "RETURNING id, label, status",
+            { rs, _ -> SeatDto(rs.getLong("id"), rs.getString("label"), rs.getString("status")) },
+            showId,
+        )
+
+    fun bookingCountForSeat(seatId: Long): Int =
+        jdbc.queryForObject("SELECT COUNT(*) FROM booking WHERE seat_id = ?", Int::class.java, seatId) ?: 0
 
     // ---- metrics ---------------------------------------------------------
 

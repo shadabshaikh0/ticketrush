@@ -13,6 +13,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 @RequestMapping("/demo")
 class DemoController(
     private val stampede: StampedeService,
+    private val holds: HoldService,
     private val events: SeatEventPublisher,
     private val seats: SeatRepository,
     @Value("\${demo.show-id}") private val showId: Long,
@@ -21,6 +22,14 @@ class DemoController(
 
     @PostMapping("/stampede")
     fun stampede(@RequestBody req: StampedeRequest): StampedeResult = stampede.run(req)
+
+    // M2 — hold seats for a TTL; the sweeper auto-releases them on expiry.
+    @PostMapping("/hold")
+    fun hold(@RequestBody req: HoldRequest): Map<String, Any> = holds.holdSeats(req.count, req.ttlSeconds)
+
+    // M2 — fire N identical (same idempotency key) confirms; exactly one booking must result.
+    @PostMapping("/idempotency-test")
+    fun idempotencyTest(): Map<String, Any?> = holds.idempotencyTest()
 
     @PostMapping("/reset")
     fun reset(): Map<String, Any> {

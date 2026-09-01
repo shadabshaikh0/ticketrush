@@ -14,6 +14,9 @@ data class BookResult(
     val retries: Int = 0,
 )
 
+/** Request body for POST /demo/hold. */
+data class HoldRequest(val count: Int = 20, val ttlSeconds: Long = 8)
+
 /** Request body for POST /demo/stampede. */
 data class StampedeRequest(
     val concurrency: Int = 500,

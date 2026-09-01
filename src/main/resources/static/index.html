@@ -14,6 +14,7 @@
             --muted: #9aa3b2;
             --avail: #2a2f3d;
             --booked: #22c55e;
+            --held: #eab308;
             --oversold: #ef4444;
             --accent: #6366f1;
         }
@@ -48,6 +49,7 @@
             font-size: 10px; color: var(--muted); transition: background .15s, transform .1s;
         }
         .seat.booked { background: var(--booked); color: #06240f; font-weight: 700; }
+        .seat.held { background: var(--held); color: #2a1e05; font-weight: 700; }
         .seat.oversold { background: var(--oversold); color: #2a0606; font-weight: 700; animation: flash .5s; }
         @keyframes flash { 0% { transform: scale(1.25); } 100% { transform: scale(1); } }
         .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
@@ -103,9 +105,24 @@
 
         <div class="legend">
             <span><i class="dot" style="background:var(--avail)"></i> available</span>
+            <span><i class="dot" style="background:var(--held)"></i> held (lease)</span>
             <span><i class="dot" style="background:var(--booked)"></i> booked</span>
             <span><i class="dot" style="background:var(--oversold)"></i> double-booked (oversold)</span>
         </div>
+
+        <div class="controls" style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">
+            <div class="field">
+                <label for="holdCount">Hold seats</label>
+                <input id="holdCount" type="number" value="20" min="1" max="100"/>
+            </div>
+            <div class="field">
+                <label for="ttl">TTL (sec)</label>
+                <input id="ttl" type="number" value="8" min="1" max="120"/>
+            </div>
+            <button id="holdBtn" class="secondary">Hold seats (watch auto-release)</button>
+            <button id="idemBtn" class="secondary">Idempotency test</button>
+        </div>
+        <div class="narration" id="m2result" style="display:none;"></div>
 
         <div class="narration" id="narration"></div>
     </div>
